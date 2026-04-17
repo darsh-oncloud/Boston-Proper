@@ -2,7 +2,7 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
+define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, format) => {
 
     var SALES_ORDER_SEARCH_ID = 'customsearch_bp_sales_order_deposite';
 
@@ -55,11 +55,12 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
             var soData = search.lookupFields({
                 type: search.Type.SALES_ORDER,
                 id: salesOrderId,
-                columns: ['entity', 'total']
+                columns: ['entity', 'total', 'trandate']
             });
 
             var customerId = '';
             var soTotal = 0;
+            var soTranDate = '';
 
             if (soData.entity && soData.entity.length > 0) {
                 customerId = soData.entity[0].value;
@@ -67,6 +68,10 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
             if (soData.total) {
                 soTotal = parseFloat(soData.total) || 0;
+            }
+
+            if (soData.trandate) {
+                soTranDate = soData.trandate;
             }
 
             if (!customerId) {
@@ -101,6 +106,16 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
                 fieldId: 'undepfunds',
                 value: 'T'
             });
+
+            if (soTranDate) {
+                customerDeposit.setValue({
+                    fieldId: 'trandate',
+                    value: format.parse({
+                        value: soTranDate,
+                        type: format.Type.DATE
+                    })
+                });
+            }
 
             var depositId = customerDeposit.save({
                 enableSourcing: true,
