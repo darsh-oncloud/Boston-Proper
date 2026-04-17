@@ -1,88 +1,115 @@
 /**
- * @NApiVersion 2.x
+ * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/record', 'N/log'], function(record, log) {
+define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
-    // List of sales order internal IDs
-    /*var salesOrderIds = [
-        25333038
-        // Add more internal IDs as needed
-    ];*/
-
-    var salesOrderIds = [
-      43354214
-        // Add more internal IDs as needed
-    ];
+    var SALES_ORDER_SEARCH_ID = 'customsearch_bp_sales_order_deposite';
 
     function getInputData() {
-        return salesOrderIds;
+        return search.load({
+            id: SALES_ORDER_SEARCH_ID
+        });
     }
 
     function map(context) {
-        var salesOrderId = context.value;
-        context.write({
-            key: salesOrderId,
-            value: salesOrderId
-        });
+        try {
+            var result = JSON.parse(context.value);
+            var salesOrderId = '';
+
+            if (result.values['GROUP(internalid)']) {
+                salesOrderId = result.values['GROUP(internalid)'].value;
+            } else if (result.values.internalid && result.values.internalid.value) {
+                salesOrderId = result.values.internalid.value;
+            }
+
+            if (salesOrderId) {
+                context.write({
+                    key: salesOrderId,
+                    value: salesOrderId
+                });
+            }
+
+        } catch (e) {
+            log.error({
+                title: 'Map Error',
+                details: e
+            });
+        }
     }
 
     function reduce(context) {
         var salesOrderId = context.key;
 
         try {
-            var salesOrder = record.load({
-                type: record.Type.SALES_ORDER,
-                id: salesOrderId
-            });
+            var depositExists = checkCustomerDeposit(salesOrderId);
 
-            var customerDeposit = record.create({
-                type: record.Type.CUSTOMER_DEPOSIT,
+            if (depositExists) {
+                log.audit({
+                    title: 'Skipped - Deposit Exists',
+                    details: 'Sales Order ID: ' + salesOrderId
+                });
+                return;
+            }
+
+            var customerDeposit = record.transform({
+                fromType: record.Type.SALES_ORDER,
+                fromId: salesOrderId,
+                toType: record.Type.CUSTOMER_DEPOSIT,
                 isDynamic: true
             });
 
             customerDeposit.setValue({
-                fieldId: 'customer',
-                value: salesOrder.getValue('entity')
-            });
-
-            customerDeposit.setValue({
-                fieldId: 'salesorder',
-                value: salesOrderId
-            });
-
-            customerDeposit.setValue({
-                fieldId: 'payment',
-                value: salesOrder.getValue('total') // Assuming total amount as payment
-            });
-
-            customerDeposit.setValue({
                 fieldId: 'undepfunds',
-                value: 'T'
+                value: true
             });
 
-            var depositId = customerDeposit.save();
+            var depositId = customerDeposit.save({
+                enableSourcing: true,
+                ignoreMandatoryFields: false
+            });
+
             log.audit({
                 title: 'Customer Deposit Created',
-                details: 'Customer Deposit ID: ' + depositId + ' for Sales Order ID: ' + salesOrderId
+                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId
             });
+
         } catch (e) {
             log.error({
-                title: 'Error processing Sales Order ID: ' + salesOrderId,
+                title: 'Reduce Error - Sales Order ID: ' + salesOrderId,
                 details: e
             });
         }
     }
 
-    function summarize(summary) {
-        summary.output.iterator().each(function(key, value) {
-            log.audit({
-                title: 'Processed Sales Order',
-                details: 'Sales Order ID: ' + key
-            });
-            return true;
+    function checkCustomerDeposit(salesOrderId) {
+        var customerdepositSearchObj = search.create({
+            type: "customerdeposit",
+            settings: [{ name: "consolidationtype", value: "ACCTTYPE" }],
+            filters: [
+                ["type", "anyof", "CustDep"],
+                "AND",
+                ["mainline", "is", "T"],
+                "AND",
+                ["salesorder", "anyof", salesOrderId]
+            ],
+            columns: [
+                search.createColumn({
+                    name: "internalid",
+                    label: "Internal ID"
+                })
+            ]
         });
 
+        var results = customerdepositSearchObj.run().getRange({
+            start: 0,
+            end: 1
+        });
+
+        return results && results.length > 0;
+    }
+
+    function summarize(summary) {
         if (summary.inputSummary.error) {
             log.error({
                 title: 'Input Error',
