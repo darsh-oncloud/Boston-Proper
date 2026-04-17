@@ -99,7 +99,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
             customerDeposit.setValue({
                 fieldId: 'undepfunds',
-                value: true
+                value: 'T'
             });
 
             var depositId = customerDeposit.save({
