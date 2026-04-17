@@ -52,11 +52,49 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
                 return;
             }
 
-            var customerDeposit = record.transform({
-                fromType: record.Type.SALES_ORDER,
-                fromId: salesOrderId,
-                toType: record.Type.CUSTOMER_DEPOSIT,
+            var soData = search.lookupFields({
+                type: search.Type.SALES_ORDER,
+                id: salesOrderId,
+                columns: ['entity', 'total']
+            });
+
+            var customerId = '';
+            var soTotal = 0;
+
+            if (soData.entity && soData.entity.length > 0) {
+                customerId = soData.entity[0].value;
+            }
+
+            if (soData.total) {
+                soTotal = parseFloat(soData.total) || 0;
+            }
+
+            if (!customerId) {
+                log.error({
+                    title: 'Missing Customer',
+                    details: 'No customer found for Sales Order ID: ' + salesOrderId
+                });
+                return;
+            }
+
+            var customerDeposit = record.create({
+                type: record.Type.CUSTOMER_DEPOSIT,
                 isDynamic: true
+            });
+
+            customerDeposit.setValue({
+                fieldId: 'customer',
+                value: customerId
+            });
+
+            customerDeposit.setValue({
+                fieldId: 'salesorder',
+                value: salesOrderId
+            });
+
+            customerDeposit.setValue({
+                fieldId: 'payment',
+                value: soTotal
             });
 
             customerDeposit.setValue({
