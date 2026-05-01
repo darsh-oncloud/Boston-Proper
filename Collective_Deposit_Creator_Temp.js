@@ -104,13 +104,13 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
 
             customerDeposit.setValue({
                 fieldId: 'undepfunds',
-                value: 'T'
+                value: false
             });
 
-            // customerDeposit.setValue({
-            //     fieldId: 'account',
-            //     value: 1035
-            // });
+            customerDeposit.setValue({
+                fieldId: 'account',
+                value: 1035
+            });
 
             if (soTranDate) {
                 customerDeposit.setValue({
