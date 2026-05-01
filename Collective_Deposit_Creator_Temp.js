@@ -107,6 +107,11 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 value: 'T'
             });
 
+            customerDeposit.setValue({
+                fieldId: 'account',
+                value: 1035
+            });
+
             if (soTranDate) {
                 customerDeposit.setValue({
                     fieldId: 'trandate',
