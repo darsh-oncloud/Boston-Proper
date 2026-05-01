@@ -102,10 +102,10 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 value: soTotal
             });
 
-            customerDeposit.setValue({
-                fieldId: 'undepfunds',
-                value: false
-            });
+            // customerDeposit.setValue({
+            //     fieldId: 'account',
+            //     value: false
+            // });
 
             customerDeposit.setValue({
                 fieldId: 'account',
