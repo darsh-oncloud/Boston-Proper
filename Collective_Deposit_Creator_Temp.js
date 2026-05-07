@@ -109,7 +109,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
           
             customerDeposit.setValue({
                 fieldId: 'custbody_bp_collectives_order',
-                value: 'T'
+                value: true
             });
 
 
