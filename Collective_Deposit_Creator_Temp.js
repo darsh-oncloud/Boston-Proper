@@ -106,6 +106,11 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 fieldId: 'undepfunds',
                 value: 'T'
             });
+          
+            customerDeposit.setValue({
+                fieldId: 'custbody_bp_collectives_order',
+                value: 'T'
+            });
 
 
             if (soTranDate) {
