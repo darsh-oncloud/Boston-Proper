@@ -8,7 +8,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
   const SAVED_SEARCH_ID     = 'customsearch_collectives_order_deposit_2';
   const TARGET_ACCOUNT_ID   = '1032';       // 1105 Collective Accounts Receivable
   const INVOICE_OPEN_STATUS = 'CustInvc:A'; // Open
-  const BUFFER_MS           = 2500;         // small buffer after setting A/R account
+  const BUFFER_MS           = 2500;
   // ----------------------------
 
   const getInputData = () => search.load({ id: SAVED_SEARCH_ID });
@@ -25,13 +25,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       const amt    = findVal(values, 'amount');
       const amount = amt && (amt.value !== undefined ? amt.value : amt);
 
-      if (!salesOrderId) {
-        log.error('No sales order in search row', {
-          depAppId: depAppId,
-          values: values
-        });
-        return;
-      }
+      if (!salesOrderId) return;
 
       context.write({
         key: String(depAppId),
@@ -42,7 +36,11 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       });
 
     } catch (e) {
-      log.error('map error key ' + context.key, e);
+      log.error('MAP ERROR', {
+        key: context.key,
+        name: e.name,
+        message: e.message
+      });
     }
   };
 
@@ -54,13 +52,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       const salesOrderId = first.salesOrderId;
       const depAppAmount = Math.abs(parseFloat(first.amount) || 0);
 
-      log.audit('START PROCESSING DEPOSIT APPLICATION', {
-        depAppId: depAppId,
-        salesOrderId: salesOrderId,
-        depAppAmount: depAppAmount
-      });
-
-      // 1. Find target open invoice from Sales Order
+      // 1. Find open invoice created from Sales Order
       const invoices = [];
 
       search.create({
@@ -89,47 +81,35 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       });
 
       if (!invoices.length) {
-        log.audit('No open invoice found for Sales Order', {
+        log.audit('NO OPEN INVOICE FOUND', {
           depAppId: depAppId,
           salesOrderId: salesOrderId
         });
         return;
       }
 
-      // If multiple open invoices, pick closest amount
+      // 2. Pick closest invoice by amount
       invoices.sort((a, b) => {
         return Math.abs(a.open - depAppAmount) - Math.abs(b.open - depAppAmount);
       });
 
       const targetInvoiceId = invoices[0].id;
 
-      log.audit('TARGET INVOICE SELECTED FROM SEARCH', {
+      log.audit('TARGET INVOICE FOUND', {
         depAppId: depAppId,
         salesOrderId: salesOrderId,
         depAppAmount: depAppAmount,
-        targetInvoiceId: targetInvoiceId,
-        targetInvoiceNumber: invoices[0].tranid,
-        targetInvoiceOpenAmount: invoices[0].open,
-        openInvoiceCount: invoices.length,
-        allOpenInvoices: invoices
+        invoiceId: targetInvoiceId,
+        invoiceNumber: invoices[0].tranid,
+        invoiceOpenAmount: invoices[0].open,
+        openInvoiceCount: invoices.length
       });
 
-      /**
-       * IMPORTANT CHANGE:
-       * Do not use submitFields here.
-       * submitFields is failing because Deposit Application requires at least one applied item.
-       *
-       * Load record in dynamic mode, set A/R Account field aracct,
-       * wait small buffer, then read Apply tab.
-       */
+      // 3. Load Deposit Application and set A/R account
       const depApp = record.load({
         type: 'depositapplication',
         id: depAppId,
         isDynamic: true
-      });
-
-      const oldArAccount = depApp.getValue({
-        fieldId: 'aracct'
       });
 
       depApp.setValue({
@@ -138,46 +118,13 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
         ignoreFieldChange: false
       });
 
-      const newArAccount = depApp.getValue({
-        fieldId: 'aracct'
-      });
-
-      log.audit('A/R ACCOUNT SELECTED ON DEPOSIT APPLICATION', {
-        depAppId: depAppId,
-        fieldId: 'aracct',
-        oldArAccount: oldArAccount,
-        newArAccount: newArAccount,
-        targetAccountId: TARGET_ACCOUNT_ID
-      });
-
-      // Small buffer after setting A/R account
       waitMs(BUFFER_MS);
 
-      log.audit('BUFFER COMPLETED AFTER A/R ACCOUNT SET', {
-        depAppId: depAppId,
-        bufferMs: BUFFER_MS,
-        currentArAccount: depApp.getValue({ fieldId: 'aracct' })
-      });
-
+      // 4. Find invoice in Apply tab
       const lineCount = depApp.getLineCount({
         sublistId: 'apply'
       });
 
-      log.audit('APPLY TAB LINE COUNT AFTER ACCOUNT SET', {
-        depAppId: depAppId,
-        targetInvoiceId: targetInvoiceId,
-        applyLineCount: lineCount
-      });
-
-      if (!lineCount) {
-        log.audit('No invoices in Apply tab after account change', {
-          depAppId: depAppId,
-          targetInvoiceId: targetInvoiceId
-        });
-        return;
-      }
-
-      // 2. Choose target invoice line from Apply tab
       let chosenLine = -1;
 
       for (let i = 0; i < lineCount; i++) {
@@ -187,28 +134,6 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
           line: i
         });
 
-        const refNum = depApp.getSublistValue({
-          sublistId: 'apply',
-          fieldId: 'refnum',
-          line: i
-        });
-
-        const due = depApp.getSublistValue({
-          sublistId: 'apply',
-          fieldId: 'due',
-          line: i
-        });
-
-        log.debug('APPLY LINE CHECK AFTER ACCOUNT SET', {
-          depAppId: depAppId,
-          line: i,
-          doc: doc,
-          refNum: refNum,
-          due: due,
-          targetInvoiceId: targetInvoiceId,
-          isTarget: String(doc) === String(targetInvoiceId)
-        });
-
         if (String(doc) === String(targetInvoiceId)) {
           chosenLine = i;
           break;
@@ -216,16 +141,15 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       }
 
       if (chosenLine === -1) {
-        log.error('Invoice not in Apply tab after account change', {
+        log.error('INVOICE NOT FOUND IN APPLY TAB', {
           depAppId: depAppId,
           targetInvoiceId: targetInvoiceId,
-          applyLineCount: lineCount,
-          note: 'A/R Account was set using fieldId aracct, but target invoice still did not appear.'
+          applyLineCount: lineCount
         });
         return;
       }
 
-      // 3. Uncheck all lines, then check only selected invoice line
+      // 5. Uncheck all lines and apply only selected invoice
       for (let i = 0; i < lineCount; i++) {
         depApp.selectLine({
           sublistId: 'apply',
@@ -243,16 +167,10 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
         });
       }
 
-      const invId = depApp.getSublistValue({
+      const appliedInvoiceId = depApp.getSublistValue({
         sublistId: 'apply',
         fieldId: 'doc',
         line: chosenLine
-      });
-
-      log.audit('TARGET INVOICE LINE SELECTED', {
-        depAppId: depAppId,
-        chosenLine: chosenLine,
-        invoiceId: invId
       });
 
       const savedId = depApp.save({
@@ -260,28 +178,31 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
         ignoreMandatoryFields: false
       });
 
-      log.audit('DEPOSIT APPLICATION SAVED SUCCESSFULLY', {
+      log.audit('DEPOSIT APPLICATION APPLIED', {
         depAppId: savedId,
-        appliedInvoiceId: invId,
+        appliedInvoiceId: appliedInvoiceId,
         arAccount: TARGET_ACCOUNT_ID
       });
 
     } catch (e) {
-      log.error('reduce error depApp ' + depAppId, {
+      log.error('REDUCE ERROR', {
+        depAppId: depAppId,
         name: e.name,
-        message: e.message,
-        stack: e.stack
+        message: e.message
       });
     }
   };
 
   const summarize = (summary) => {
     summary.reduceSummary.errors.iterator().each((key, err) => {
-      log.error('Unhandled depApp ' + key, err);
+      log.error('UNHANDLED DEPAPP ERROR', {
+        depAppId: key,
+        error: err
+      });
       return true;
     });
 
-    log.audit('Done', {
+    log.audit('DONE', {
       usage: summary.usage,
       yields: summary.yields
     });
@@ -303,7 +224,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
     const start = new Date().getTime();
 
     while (new Date().getTime() - start < ms) {
-      // intentional small buffer
+      // small buffer after setting A/R account
     }
   }
 
