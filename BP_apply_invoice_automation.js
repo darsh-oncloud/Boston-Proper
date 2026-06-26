@@ -2,16 +2,20 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  *
- * Input  : your saved search (account 6, collectives, not applied, has SO).
- * map    : pulls deposit application id + sales order + amount from the search
- *          row, and keys by deposit id (mainline=F can return duplicate rows).
- * reduce : once per deposit -> find open invoice, change account, apply, save.
+ * Why this version exists:
+ * Changing the A/R account in memory does NOT refresh the Apply tab. The list
+ * of applicable invoices is sourced from the account, so we must persist the
+ * account change FIRST, then RELOAD so the Apply tab re-sources for the new
+ * account (this mirrors the UI "record reloads everything" behaviour).
+ *
+ * We use record.submitFields to change just the account, which skips the
+ * "you must apply the deposit to at least one item" full-save validation.
  */
 define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
   // ---------- CONFIG ----------
-  const SAVED_SEARCH_ID     = 'customsearch_collectives_order_deposit_2'; // your Collectives Order Deposit search
-  const TARGET_ACCOUNT_ID   = '1032';                 // <-- account to switch the deposit application TO
+  const SAVED_SEARCH_ID     = 'customsearch1782429009740'; // your Collectives Order Deposit search
+  const TARGET_ACCOUNT_ID   = '1032';                 // <-- 1105 Collective Accounts Receivable internal id
   const INVOICE_OPEN_STATUS = 'CustInvc:A';                // Open
   // ----------------------------
 
@@ -30,7 +34,6 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
       if (!salesOrderId) { log.error('No sales order in search row', depAppId); return; }
 
-      // key by deposit id so each deposit application is handled once
       context.write({
         key:   String(depAppId),
         value: JSON.stringify({ salesOrderId: String(salesOrderId), amount: amount })
@@ -41,13 +44,13 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
   };
 
   const reduce = (context) => {
+    const depAppId = context.key;
     try {
-      const depAppId     = context.key;
-      const first        = JSON.parse(context.values[0]); // dupes collapse here
+      const first        = JSON.parse(context.values[0]);
       const salesOrderId = first.salesOrderId;
       const depAppAmount = Math.abs(parseFloat(first.amount) || 0);
 
-      // --- open invoices created from that sales order ---
+      // 1. Identify the target open invoice for the sales order (its internal id)
       const invoices = [];
       search.create({
         type: 'invoice',
@@ -59,42 +62,57 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
         ],
         columns: ['internalid', 'amountremaining']
       }).run().each((r) => {
-        invoices.push({ id: r.getValue('internalid'), open: Math.abs(parseFloat(r.getValue('amountremaining')) || 0) });
+        invoices.push({ id: String(r.getValue('internalid')), open: Math.abs(parseFloat(r.getValue('amountremaining')) || 0) });
         return true;
       });
-
-      if (!invoices.length) { log.audit('No open invoice -> skipped', 'depApp ' + depAppId + ' SO ' + salesOrderId); return; }
-
-      // if multiple, pick the open balance closest to the deposit amount
       invoices.sort((a, b) => Math.abs(a.open - depAppAmount) - Math.abs(b.open - depAppAmount));
-      const targetInvoiceId = invoices[0].id;
+      const targetInvoiceId = invoices.length ? invoices[0].id : null;
 
-      // --- load dynamic, change account (re-sources Apply tab), apply, save ---
-      const depApp = record.load({ type: 'depositapplication', id: depAppId, isDynamic: true });
-      depApp.setValue({ fieldId: 'account', value: TARGET_ACCOUNT_ID });
+      // 2. Persist the account change WITHOUT a full save (skips the apply validation)
+      record.submitFields({
+        type:   'depositapplication',
+        id:     depAppId,
+        values: { account: TARGET_ACCOUNT_ID },
+        options: { enableSourcing: true, ignoreMandatoryFields: true }
+      });
 
+      // 3. Reload -> Apply tab is now sourced for the NEW account
+      const depApp    = record.load({ type: 'depositapplication', id: depAppId, isDynamic: true });
       const lineCount = depApp.getLineCount({ sublistId: 'apply' });
-      let applied = false;
-      for (let i = 0; i < lineCount; i++) {
-        const doc         = depApp.getSublistValue({ sublistId: 'apply', fieldId: 'doc', line: i });
-        const shouldApply = String(doc) === String(targetInvoiceId);
-        depApp.selectLine({ sublistId: 'apply', line: i });
-        depApp.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: shouldApply });
-        depApp.commitLine({ sublistId: 'apply' });
-        if (shouldApply) applied = true;
-      }
+      if (!lineCount) { log.audit('No invoices in Apply tab after account change', 'depApp ' + depAppId); return; }
 
-      if (!applied) {
-        log.error('Invoice not in Apply tab after account change',
-          'depApp ' + depAppId + ' invoice ' + targetInvoiceId + ' (apply lines: ' + lineCount + ')');
-        return;
+      // 4. Choose the line: prefer the sales-order invoice; else closest open amount
+      let chosenLine = -1;
+      if (targetInvoiceId) {
+        for (let i = 0; i < lineCount; i++) {
+          if (String(depApp.getSublistValue({ sublistId: 'apply', fieldId: 'doc', line: i })) === targetInvoiceId) {
+            chosenLine = i;
+            break;
+          }
+        }
       }
+      if (chosenLine === -1) {
+        let best = Infinity;
+        for (let i = 0; i < lineCount; i++) {
+          const due  = Math.abs(parseFloat(depApp.getSublistValue({ sublistId: 'apply', fieldId: 'due', line: i })) || 0);
+          const diff = Math.abs(due - depAppAmount);
+          if (diff < best) { best = diff; chosenLine = i; }
+        }
+        log.audit('SO invoice not in tab, used closest amount', 'depApp ' + depAppId + ' line ' + chosenLine);
+      }
+      if (chosenLine === -1) { log.error('Could not choose an invoice line', 'depApp ' + depAppId); return; }
 
-      depApp.save(); // has an applied line now, so native validation passes
-      log.audit('Applied', 'depApp ' + depAppId + ' -> invoice ' + targetInvoiceId + ' (of ' + invoices.length + ' open)');
+      // 5. Apply that one line and save (now it has an applied item -> validation passes)
+      depApp.selectLine({ sublistId: 'apply', line: chosenLine });
+      depApp.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: true });
+      depApp.commitLine({ sublistId: 'apply' });
+
+      const invId = depApp.getSublistValue({ sublistId: 'apply', fieldId: 'doc', line: chosenLine });
+      depApp.save();
+      log.audit('Applied', 'depApp ' + depAppId + ' -> invoice ' + invId);
 
     } catch (e) {
-      log.error('reduce error depApp ' + context.key, e);
+      log.error('reduce error depApp ' + depAppId, e);
     }
   };
 
@@ -103,7 +121,6 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
     log.audit('Done', 'Usage: ' + summary.usage + ' | Yields: ' + summary.yields);
   };
 
-  // finds a value whether the column key is "salesorder", "salesorder.createdFrom", "createdFrom.salesorder", etc.
   const findVal = (values, name) => {
     name = name.toLowerCase();
     for (const k in values) {
