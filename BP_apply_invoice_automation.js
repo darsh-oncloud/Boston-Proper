@@ -14,7 +14,7 @@
 define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
   // ---------- CONFIG ----------
-  const SAVED_SEARCH_ID     = 'customsearch1782429009740'; // your Collectives Order Deposit search
+  const SAVED_SEARCH_ID     = 'customsearch_collectives_order_deposit_2'; // your Collectives Order Deposit search
   const TARGET_ACCOUNT_ID   = '1032';                 // <-- 1105 Collective Accounts Receivable internal id
   const INVOICE_OPEN_STATUS = 'CustInvc:A';                // Open
   // ----------------------------
