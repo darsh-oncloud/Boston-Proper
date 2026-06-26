@@ -72,7 +72,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
       record.submitFields({
         type:   'depositapplication',
         id:     depAppId,
-        values: { account: TARGET_ACCOUNT_ID },
+        values: { aracct: TARGET_ACCOUNT_ID },
         options: { enableSourcing: true, ignoreMandatoryFields: true }
       });
 
