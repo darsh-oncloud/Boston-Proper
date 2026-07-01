@@ -56,41 +56,26 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
             var soTotal = 0;
             var soTranDate = '';
 
-            var salesorderSearchObj = search.create({
-                type: search.Type.SALES_ORDER,
-                settings: [{ name: "consolidationtype", value: "ACCTTYPE" }],
-                filters: [
-                    ["type", "anyof", "SalesOrd"],
-                    "AND",
-                    ["internalidnumber", "equalto", salesOrderId],
-                    "AND",
-                    ["mainline", "is", "T"]
-                ],
-                columns: [
-                    search.createColumn({ name: "entity", label: "Customer" }),
-                    search.createColumn({ name: "trandate", label: "Date" }),
-                    search.createColumn({ name: "total", label: "Amount (Transaction Total)" })
-                ]
+            var salesOrder = record.load({
+                type: record.Type.SALES_ORDER,
+                id: salesOrderId,
+                isDynamic: false
             });
 
-            salesorderSearchObj.run().each(function(result) {
-                customerId = result.getValue({
-                    name: "entity"
-                });
+            customerId = salesOrder.getValue({
+                fieldId: 'entity'
+            });
 
-                soTranDate = result.getValue({
-                    name: "trandate"
-                });
+            soTotal = parseFloat(salesOrder.getValue({
+                fieldId: 'total'
+            })) || 0;
 
-                soTotal = parseFloat(
-                    String(result.getValue({ name: "total" }) || "0").replace(/,/g, "")
-                ) || 0;
-
-                return false;
+            soTranDate = salesOrder.getValue({
+                fieldId: 'trandate'
             });
 
             log.audit({
-                title: 'SO Search Total Used For Deposit',
+                title: 'SO Loaded Total Used For Deposit',
                 details: {
                     salesOrderId: salesOrderId,
                     customerId: customerId,
@@ -140,10 +125,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
             if (soTranDate) {
                 customerDeposit.setValue({
                     fieldId: 'trandate',
-                    value: format.parse({
-                        value: soTranDate,
-                        type: format.Type.DATE
-                    })
+                    value: soTranDate
                 });
             }
 
@@ -154,7 +136,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
 
             log.audit({
                 title: 'Customer Deposit Created',
-                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId
+                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId + ' | Amount: ' + soTotal
             });
 
         } catch (e) {
