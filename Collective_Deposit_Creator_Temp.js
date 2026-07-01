@@ -52,27 +52,52 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 return;
             }
 
-            var soData = search.lookupFields({
-                type: search.Type.SALES_ORDER,
-                id: salesOrderId,
-                columns: ['entity', 'total', 'trandate']
-            });
-
             var customerId = '';
             var soTotal = 0;
             var soTranDate = '';
 
-            if (soData.entity && soData.entity.length > 0) {
-                customerId = soData.entity[0].value;
-            }
+            var salesorderSearchObj = search.create({
+                type: search.Type.SALES_ORDER,
+                settings: [{ name: "consolidationtype", value: "ACCTTYPE" }],
+                filters: [
+                    ["type", "anyof", "SalesOrd"],
+                    "AND",
+                    ["internalidnumber", "equalto", salesOrderId],
+                    "AND",
+                    ["mainline", "is", "T"]
+                ],
+                columns: [
+                    search.createColumn({ name: "entity", label: "Customer" }),
+                    search.createColumn({ name: "trandate", label: "Date" }),
+                    search.createColumn({ name: "total", label: "Amount (Transaction Total)" })
+                ]
+            });
 
-            if (soData.total) {
-                soTotal = parseFloat(soData.total) || 0;
-            }
+            salesorderSearchObj.run().each(function(result) {
+                customerId = result.getValue({
+                    name: "entity"
+                });
 
-            if (soData.trandate) {
-                soTranDate = soData.trandate;
-            }
+                soTranDate = result.getValue({
+                    name: "trandate"
+                });
+
+                soTotal = parseFloat(
+                    String(result.getValue({ name: "total" }) || "0").replace(/,/g, "")
+                ) || 0;
+
+                return false;
+            });
+
+            log.audit({
+                title: 'SO Search Total Used For Deposit',
+                details: {
+                    salesOrderId: salesOrderId,
+                    customerId: customerId,
+                    soTotal: soTotal,
+                    soTranDate: soTranDate
+                }
+            });
 
             if (!customerId) {
                 log.error({
@@ -111,7 +136,6 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 fieldId: 'custbody_bp_collectives_order',
                 value: true
             });
-
 
             if (soTranDate) {
                 customerDeposit.setValue({
