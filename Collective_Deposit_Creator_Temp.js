@@ -55,7 +55,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
             var soData = search.lookupFields({
                 type: search.Type.SALES_ORDER,
                 id: salesOrderId,
-                columns: ['entity', 'amount', 'trandate']
+                columns: ['entity', 'total', 'trandate']
             });
 
             var customerId = '';
@@ -66,8 +66,8 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 customerId = soData.entity[0].value;
             }
 
-            if (soData.amount) {
-                soTotal = parseFloat(soData.amount) || 0;
+            if (soData.total) {
+                soTotal = parseFloat(soData.total) || 0;
             }
 
             if (soData.trandate) {
