@@ -52,70 +52,27 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 return;
             }
 
-            // Load and save Sales Order to trigger Avalara/tax calculation
-            var salesOrder = record.load({
-                type: record.Type.SALES_ORDER,
+            var soData = search.lookupFields({
+                type: search.Type.SALES_ORDER,
                 id: salesOrderId,
-                isDynamic: false
-            });
-
-            var savedSoId = salesOrder.save({
-                enableSourcing: true,
-                ignoreMandatoryFields: false
-            });
-
-            log.audit({
-                title: 'Sales Order Re-Saved Before Deposit',
-                details: 'Sales Order ID: ' + savedSoId
+                columns: ['entity', 'total', 'trandate']
             });
 
             var customerId = '';
             var soTotal = 0;
             var soTranDate = '';
 
-            // After re-save, get updated SO total from Sales Order search
-            var salesorderSearchObj = search.create({
-                type: search.Type.SALES_ORDER,
-                settings: [{ name: "consolidationtype", value: "ACCTTYPE" }],
-                filters: [
-                    ["type", "anyof", "SalesOrd"],
-                    "AND",
-                    ["internalidnumber", "equalto", salesOrderId],
-                    "AND",
-                    ["mainline", "is", "T"]
-                ],
-                columns: [
-                    search.createColumn({ name: "entity", label: "Customer" }),
-                    search.createColumn({ name: "trandate", label: "Date" }),
-                    search.createColumn({ name: "total", label: "Amount (Transaction Total)" })
-                ]
-            });
+            if (soData.entity && soData.entity.length > 0) {
+                customerId = soData.entity[0].value;
+            }
 
-            salesorderSearchObj.run().each(function(result) {
-                customerId = result.getValue({
-                    name: "entity"
-                });
+            if (soData.total) {
+                soTotal = parseFloat(soData.total) || 0;
+            }
 
-                soTranDate = result.getValue({
-                    name: "trandate"
-                });
-
-                soTotal = parseFloat(
-                    String(result.getValue({ name: "total" }) || "0").replace(/,/g, "")
-                ) || 0;
-
-                return false;
-            });
-
-            log.audit({
-                title: 'SO Total After Re-Save Used For Deposit',
-                details: {
-                    salesOrderId: salesOrderId,
-                    customerId: customerId,
-                    soTotal: soTotal,
-                    soTranDate: soTranDate
-                }
-            });
+            if (soData.trandate) {
+                soTranDate = soData.trandate;
+            }
 
             if (!customerId) {
                 log.error({
@@ -155,6 +112,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 value: true
             });
 
+
             if (soTranDate) {
                 customerDeposit.setValue({
                     fieldId: 'trandate',
@@ -172,7 +130,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
 
             log.audit({
                 title: 'Customer Deposit Created',
-                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId + ' | Amount: ' + soTotal
+                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId
             });
 
         } catch (e) {
