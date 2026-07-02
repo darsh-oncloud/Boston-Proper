@@ -5,6 +5,7 @@
 define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, format) => {
 
     var SALES_ORDER_SEARCH_ID = 'customsearch_bp_sales_order_deposite';
+    var WAIT_TIME_MS = 3000; // 3 seconds
 
     function getInputData() {
         return search.load({
@@ -52,27 +53,74 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 return;
             }
 
-            var soData = search.lookupFields({
-                type: search.Type.SALES_ORDER,
+            // 1. Load Sales Order
+            var salesOrderToSave = record.load({
+                type: record.Type.SALES_ORDER,
                 id: salesOrderId,
-                columns: ['entity', 'total', 'trandate']
+                isDynamic: false
             });
 
-            var customerId = '';
-            var soTotal = 0;
-            var soTranDate = '';
+            log.audit({
+                title: 'Sales Order Loaded Before Re-Save',
+                details: {
+                    salesOrderId: salesOrderId,
+                    totalBeforeSave: salesOrderToSave.getValue({ fieldId: 'total' }),
+                    taxBeforeSave: salesOrderToSave.getValue({ fieldId: 'taxtotal' })
+                }
+            });
 
-            if (soData.entity && soData.entity.length > 0) {
-                customerId = soData.entity[0].value;
-            }
+            // 2. Save Sales Order without changing anything
+            var savedSoId = salesOrderToSave.save({
+                enableSourcing: true,
+                ignoreMandatoryFields: false
+            });
 
-            if (soData.total) {
-                soTotal = parseFloat(soData.total) || 0;
-            }
+            log.audit({
+                title: 'Sales Order Re-Saved Before Deposit',
+                details: 'Sales Order ID: ' + savedSoId
+            });
 
-            if (soData.trandate) {
-                soTranDate = soData.trandate;
-            }
+            // 3. Wait 3 seconds before reloading
+            wait(WAIT_TIME_MS);
+
+            // 4. Reload same Sales Order after wait
+            var salesOrder = record.load({
+                type: record.Type.SALES_ORDER,
+                id: salesOrderId,
+                isDynamic: false
+            });
+
+            var customerId = salesOrder.getValue({
+                fieldId: 'entity'
+            });
+
+            var soTranId = salesOrder.getValue({
+                fieldId: 'tranid'
+            });
+
+            var soTranDate = salesOrder.getValue({
+                fieldId: 'trandate'
+            });
+
+            var soTotal = parseFloat(salesOrder.getValue({
+                fieldId: 'total'
+            })) || 0;
+
+            var soTaxTotal = parseFloat(salesOrder.getValue({
+                fieldId: 'taxtotal'
+            })) || 0;
+
+            log.audit({
+                title: 'SO Reloaded Total Used For Deposit',
+                details: {
+                    salesOrderId: salesOrderId,
+                    soTranId: soTranId,
+                    customerId: customerId,
+                    soTotal: soTotal,
+                    soTaxTotal: soTaxTotal,
+                    soTranDate: soTranDate
+                }
+            });
 
             if (!customerId) {
                 log.error({
@@ -106,20 +154,16 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 fieldId: 'undepfunds',
                 value: 'T'
             });
-          
+
             customerDeposit.setValue({
                 fieldId: 'custbody_bp_collectives_order',
                 value: true
             });
 
-
             if (soTranDate) {
                 customerDeposit.setValue({
                     fieldId: 'trandate',
-                    value: format.parse({
-                        value: soTranDate,
-                        type: format.Type.DATE
-                    })
+                    value: soTranDate
                 });
             }
 
@@ -130,7 +174,7 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
 
             log.audit({
                 title: 'Customer Deposit Created',
-                details: 'Sales Order ID: ' + salesOrderId + ' | Deposit ID: ' + depositId
+                details: 'Sales Order ID: ' + salesOrderId + ' | SO Number: ' + soTranId + ' | Deposit ID: ' + depositId + ' | Amount: ' + soTotal + ' | Tax Total: ' + soTaxTotal
             });
 
         } catch (e) {
@@ -138,6 +182,13 @@ define(['N/search', 'N/record', 'N/log', 'N/format'], (search, record, log, form
                 title: 'Reduce Error - Sales Order ID: ' + salesOrderId,
                 details: e
             });
+        }
+    }
+
+    function wait(milliseconds) {
+        var start = new Date().getTime();
+        while (new Date().getTime() - start < milliseconds) {
+            // wait
         }
     }
 
