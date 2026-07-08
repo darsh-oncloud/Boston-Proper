@@ -97,6 +97,14 @@ function(record, log, search) {
                 isDynamic: true
             });
 
+            // ADDED: If Sales Order is Collectives order, set Invoice account to 1032
+            var isCollectivesOrder = soRec.getValue({fieldId: 'custbody_bp_collectives_order'});
+            log.debug('custbody_bp_collectives_order', isCollectivesOrder);
+
+            if (isCollectivesOrder === true || isCollectivesOrder === 'T') {
+                invRec.setValue({fieldId: 'account', value: 1032});
+            }          
+
             for (var i = invRec.getLineCount({sublistId: 'item'}) - 1; i >= 0; i--) {
                 invRec.selectLine({sublistId: 'item', line: i});
 
