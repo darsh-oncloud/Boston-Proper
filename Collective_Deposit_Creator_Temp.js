@@ -55,12 +55,30 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
                 return;
             }
 
-            const paymentMatches = amountsMatch(soTotal, deposit.payment);
-            const paymentNeedsUpdate = !paymentMatches;
-            const checkboxNeedsUpdate = !deposit.collectivesOrder;
+            /*
+             * 'payment' cannot be read reliably through search - as a
+             * plain column it throws SSS_INVALID_SRCH_COL, and as a
+             * formula column {payment} it silently returns 0 instead
+             * of the real value. record.load() is the only reliable
+             * way to read it, so we load once here and reuse the same
+             * loaded record below if a save is needed (never loads
+             * twice).
+             */
+            const depositRecord = record.load({
+                type: record.Type.CUSTOMER_DEPOSIT,
+                id: deposit.id,
+                isDynamic: false
+            });
 
-            log.audit({ title: '2. Deposit Search', details: JSON.stringify({ salesOrderId, depositFound: true, depositId: deposit.id, depositPayment: deposit.payment, collectivesOrder: deposit.collectivesOrder }) });
-            log.audit({ title: '3. Comparison', details: JSON.stringify({ salesOrderId, depositId: deposit.id, soTotal, depositPayment: deposit.payment, paymentMatches, paymentNeedsUpdate, checkboxNeedsUpdate }) });
+            const existingPayment = toNumber(depositRecord.getValue({ fieldId: 'payment' }));
+            const existingCollectivesValue = isChecked(depositRecord.getValue({ fieldId: COLLECTIVES_FIELD }));
+
+            const paymentMatches = amountsMatch(soTotal, existingPayment);
+            const paymentNeedsUpdate = !paymentMatches;
+            const checkboxNeedsUpdate = !existingCollectivesValue;
+
+            log.audit({ title: '2. Deposit Search', details: JSON.stringify({ salesOrderId, depositFound: true, depositId: deposit.id, depositPayment: existingPayment, collectivesOrder: existingCollectivesValue }) });
+            log.audit({ title: '3. Comparison', details: JSON.stringify({ salesOrderId, depositId: deposit.id, soTotal, depositPayment: existingPayment, paymentMatches, paymentNeedsUpdate, checkboxNeedsUpdate }) });
 
             if (!paymentNeedsUpdate && !checkboxNeedsUpdate) {
                 log.audit({ title: '4. No Update Required', details: JSON.stringify({ salesOrderId, depositId: deposit.id }) });
@@ -75,15 +93,9 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
                     options: { enableSourcing: false, ignoreMandatoryFields: true }
                 });
 
-                log.audit({ title: '4. Deposit Checkbox Updated', details: JSON.stringify({ salesOrderId, depositId: deposit.id, collectivesOrder: true, recordLoaded: false }) });
+                log.audit({ title: '4. Deposit Checkbox Updated', details: JSON.stringify({ salesOrderId, depositId: deposit.id, collectivesOrder: true, recordLoaded: true }) });
                 return;
             }
-
-            const depositRecord = record.load({
-                type: record.Type.CUSTOMER_DEPOSIT,
-                id: deposit.id,
-                isDynamic: false
-            });
 
             depositRecord.setValue({ fieldId: 'payment', value: soTotal });
             if (checkboxNeedsUpdate) depositRecord.setValue({ fieldId: COLLECTIVES_FIELD, value: true });
@@ -93,7 +105,7 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
                 ignoreMandatoryFields: false
             });
 
-            log.audit({ title: '4. Customer Deposit Updated', details: JSON.stringify({ salesOrderId, depositId: updatedDepositId, oldPayment: deposit.payment, newPayment: soTotal, collectivesOrder: true, recordLoaded: true }) });
+            log.audit({ title: '4. Customer Deposit Updated', details: JSON.stringify({ salesOrderId, depositId: updatedDepositId, oldPayment: existingPayment, newPayment: soTotal, collectivesOrder: true, recordLoaded: true }) });
 
         } catch (e) {
             log.error({ title: 'Reduce Error - Sales Order ID: ' + salesOrderId, details: getError(e) });
@@ -101,16 +113,13 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
     }
 
     /*
-     * 'payment' is a valid Customer Deposit record field
-     * (record.load / setValue works fine with it), but it is NOT
-     * exposed as a plain searchable column on Customer Deposit
-     * transactions. Using it directly as a search.createColumn or
-     * search.lookupFields column throws:
-     *   SSS_INVALID_SRCH_COL: ... invalid column ...: payment
-     * A formula column referencing {payment} bypasses that
-     * restriction and still lets us pull it in the SAME search as
-     * the deposit id and the collectives checkbox - no second
-     * lookupFields() call needed.
+     * Only finds whether a deposit exists and its id. 'payment' is a
+     * valid Customer Deposit record field but cannot be trusted
+     * through search: as a plain column it throws SSS_INVALID_SRCH_COL,
+     * and even as a formula column ({payment}) it silently returns 0
+     * instead of the real stored value. So payment (and, for safety,
+     * the collectives checkbox) are read via record.load() in reduce()
+     * instead of here.
      */
     function findCustomerDeposit(salesOrderId) {
         const results = search.create({
@@ -121,21 +130,13 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
                 ['salesorder', 'anyof', salesOrderId]
             ],
             columns: [
-                search.createColumn({ name: 'internalid', sort: search.Sort.ASC }),
-                search.createColumn({ name: 'formulacurrency', formula: '{payment}' }),
-                search.createColumn({ name: COLLECTIVES_FIELD })
+                search.createColumn({ name: 'internalid', sort: search.Sort.ASC })
             ]
         }).run().getRange({ start: 0, end: 1 });
 
         if (!results || !results.length) return null;
 
-        const row = results[0];
-
-        return {
-            id: row.getValue({ name: 'internalid' }),
-            payment: toNumber(row.getValue({ name: 'formulacurrency' })),
-            collectivesOrder: isChecked(row.getValue({ name: COLLECTIVES_FIELD }))
-        };
+        return { id: results[0].getValue({ name: 'internalid' }) };
     }
 
     function createCustomerDeposit(salesOrderId, customerId, soTotal, soTranDate) {
