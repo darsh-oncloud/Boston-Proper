@@ -97,14 +97,6 @@ function(record, log, search) {
                 isDynamic: true
             });
 
-            // ADDED: If Sales Order is Collectives order, set Invoice account to 1032
-            // var isCollectivesOrder = soRec.getValue({fieldId: 'custbody_bp_collectives_order'});
-            // log.debug('custbody_bp_collectives_order', isCollectivesOrder);
-
-            // if (isCollectivesOrder === true || isCollectivesOrder === 'T') {
-            //     invRec.setValue({fieldId: 'account', value: 1032});
-            // }          
-
             for (var i = invRec.getLineCount({sublistId: 'item'}) - 1; i >= 0; i--) {
                 invRec.selectLine({sublistId: 'item', line: i});
 
@@ -149,6 +141,28 @@ function(record, log, search) {
             }
 
             invRec.setValue({fieldId: 'location', value: ffRec.getSublistValue({sublistId: 'item', fieldId: 'location', line: 0})});
+
+            // ADDED: If Sales Order is Collectives order AND at least one
+            // item on the invoice is flagged as a collective item, set
+            // Invoice account to 1032. Both conditions must be true -
+            // if either is false, leave the account untouched.
+            //
+            // Checked here (after the line-adjustment loop above, before
+            // the invoice is first saved) so it reflects the items that
+            // actually ended up on the invoice, and so 'account' is set
+            // on the invoice record before its very first save.
+            var isCollectivesOrder = soRec.getValue({fieldId: 'custbody_bp_collectives_order'});
+            var isCollectivesOrderTrue = (isCollectivesOrder === true || isCollectivesOrder === 'T');
+            log.debug('custbody_bp_collectives_order', isCollectivesOrderTrue);
+
+            if (isCollectivesOrderTrue) {
+                var hasCollectiveItem = invoiceHasCollectiveItem(invRec);
+                log.debug('collective check', 'order:' + isCollectivesOrderTrue + '; item:' + hasCollectiveItem);
+
+                if (hasCollectiveItem) {
+                    invRec.setValue({fieldId: 'account', value: 1032});
+                }
+            }
 
             var existingInvoiceData = getExistingInvoiceInfo(createdFrom)||null;   
  log.debug('existingInvoiceData', existingInvoiceData);
@@ -368,6 +382,53 @@ function(record, log, search) {
         }
 
         return totalWeight;
+    }
+
+    // ADDED: Checks whether any item currently on the invoice's item
+    // sublist is flagged with custitem_bp_collective_flag = true.
+    // Distinct item ids are collected first, then checked in a single
+    // item search (instead of one search/lookup per line), so this
+    // costs at most one extra search call regardless of how many
+    // lines are on the invoice.
+    function invoiceHasCollectiveItem(invRec) {
+        var itemIds = [];
+        var lineCount = invRec.getLineCount({sublistId: 'item'});
+
+        for (var i = 0; i < lineCount; i++) {
+            var itemId = invRec.getSublistValue({sublistId: 'item', fieldId: 'item', line: i});
+            if (itemId && itemIds.indexOf(itemId) === -1) {
+                itemIds.push(itemId);
+            }
+        }
+
+        if (itemIds.length === 0) {
+            return false;
+        }
+
+        var itemSearch = search.create({
+            type: 'item',
+            filters: [
+                ['internalid', 'anyof', itemIds]
+            ],
+            columns: [
+                'custitem_bp_collective_flag'
+            ]
+        });
+
+        var found = false;
+
+        itemSearch.run().each(function(result) {
+            var flagValue = result.getValue({name: 'custitem_bp_collective_flag'});
+
+            if (flagValue === true || flagValue === 'T') {
+                found = true;
+                return false; // stop iterating once we find one
+            }
+
+            return true;
+        });
+
+        return found;
     }
 
     function getExistingInvoiceInfo(soId) {
