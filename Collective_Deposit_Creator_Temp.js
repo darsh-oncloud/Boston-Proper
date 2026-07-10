@@ -4,7 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
 
-    const SALES_ORDER_SEARCH_ID = 'customsearch_bp_sales_order_deposite';
+    const SALES_ORDER_SEARCH_ID = 'customsearch_bp_sales_order_deposite_2';
     const COLLECTIVES_FIELD = 'custbody_bp_collectives_order';
 
     function getInputData() {
