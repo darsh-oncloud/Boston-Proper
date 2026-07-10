@@ -148,7 +148,7 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
         deposit.setValue({ fieldId: 'customer', value: customerId });
         deposit.setValue({ fieldId: 'salesorder', value: salesOrderId });
         deposit.setValue({ fieldId: 'payment', value: soTotal });
-        deposit.setValue({ fieldId: 'undepfunds', value: true });
+        deposit.setValue({ fieldId: 'undepfunds', value: 'T' });
         deposit.setValue({ fieldId: COLLECTIVES_FIELD, value: true });
 
         if (soTranDate) {
