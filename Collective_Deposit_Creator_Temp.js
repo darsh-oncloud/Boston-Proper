@@ -100,6 +100,18 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
         }
     }
 
+    /*
+     * 'payment' is a valid Customer Deposit record field
+     * (record.load / setValue works fine with it), but it is NOT
+     * exposed as a plain searchable column on Customer Deposit
+     * transactions. Using it directly as a search.createColumn or
+     * search.lookupFields column throws:
+     *   SSS_INVALID_SRCH_COL: ... invalid column ...: payment
+     * A formula column referencing {payment} bypasses that
+     * restriction and still lets us pull it in the SAME search as
+     * the deposit id and the collectives checkbox - no second
+     * lookupFields() call needed.
+     */
     function findCustomerDeposit(salesOrderId) {
         const results = search.create({
             type: search.Type.CUSTOMER_DEPOSIT,
@@ -109,24 +121,20 @@ define(['N/search', 'N/record', 'N/format'], (search, record, format) => {
                 ['salesorder', 'anyof', salesOrderId]
             ],
             columns: [
-                search.createColumn({ name: 'internalid', sort: search.Sort.ASC })
+                search.createColumn({ name: 'internalid', sort: search.Sort.ASC }),
+                search.createColumn({ name: 'formulacurrency', formula: '{payment}' }),
+                search.createColumn({ name: COLLECTIVES_FIELD })
             ]
         }).run().getRange({ start: 0, end: 1 });
 
         if (!results || !results.length) return null;
 
-        const depositId = results[0].getValue({ name: 'internalid' });
-
-        const depositData = search.lookupFields({
-            type: search.Type.CUSTOMER_DEPOSIT,
-            id: depositId,
-            columns: ['payment', COLLECTIVES_FIELD]
-        });
+        const row = results[0];
 
         return {
-            id: depositId,
-            payment: toNumber(depositData.payment),
-            collectivesOrder: isChecked(depositData[COLLECTIVES_FIELD])
+            id: row.getValue({ name: 'internalid' }),
+            payment: toNumber(row.getValue({ name: 'formulacurrency' })),
+            collectivesOrder: isChecked(row.getValue({ name: COLLECTIVES_FIELD }))
         };
     }
 
