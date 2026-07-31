@@ -20,7 +20,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
   var VB_JE_CREATED_CHK    = 'custbody_je_created';
   var VB_RELATED_JE_FLD    = 'custbody_related_je';
 
-  var CREATE_PAYMENT = true; // set false to test JE creation only
+  var CREATE_PAYMENT = true; 
   // ----------------------------------------------
 
   function remUsage() {
