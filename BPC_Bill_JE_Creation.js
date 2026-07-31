@@ -8,20 +8,19 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
   var SUBSIDIARY_ID = 2;
   var DEBIT_DEPARTMENT = 30;
 
-  // Script Parameters
   var PARAM_DEBIT_ACCT      = 'custscript_debit_account';
   var PARAM_CREDIT_ACCT     = 'custscript_je_credit_account';
   var PARAM_SAVED_SEARCH_ID = 'custscript_saved_search_id';
 
-  // NEW fixed accounts (internal ids)
-  var AP_DEBIT_ACCOUNT   = 1043; // debit, per vendor (must be A/P so JE is applicable on payment)
+  var AP_DEBIT_ACCOUNT   = 1043; // debit, per vendor (A/P)
   var OFFSET_CREDIT_ACCT = 1035; // credit, grand total
 
-  // Fields
   var JE_LINE_DETAIL_COL   = 'custcol_related_transaction_details';
-  var JE_RELATED_BILLS_FLD = 'custbody_related_bills'; // multiselect on JE
+  var JE_RELATED_BILLS_FLD = 'custbody_related_bills';
   var VB_JE_CREATED_CHK    = 'custbody_je_created';
   var VB_RELATED_JE_FLD    = 'custbody_related_je';
+
+  var CREATE_PAYMENT = true; // set false to test JE creation only
   // ----------------------------------------------
 
   function remUsage() {
@@ -45,7 +44,6 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
   function getInputData() {
     var savedSearchId = runtime.getCurrentScript().getParameter({ name: PARAM_SAVED_SEARCH_ID });
     if (!savedSearchId) throw new Error('Missing parameter: ' + PARAM_SAVED_SEARCH_ID);
-    log.audit('getInputData', { savedSearchId: savedSearchId, usage: remUsage() });
     return search.load({ id: savedSearchId });
   }
 
@@ -63,8 +61,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     }
 
     // -------------------- Parse + group by vendor --------------------
-    var vendorAgg = {};   // vendorId -> { total, bills[] }
-    var billSet   = {};
+    var vendorAgg = {};
+    var billSet = {};
     var grandTotal = 0;
 
     for (var i = 0; i < context.values.length; i++) {
@@ -94,7 +92,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
       return;
     }
 
-    log.audit('GROUP SUMMARY', { vendors: vendorIds.length, bills: billIds.length, grandTotal: grandTotal, usage: remUsage() });
+    log.audit('GROUP SUMMARY', { vendors: vendorIds.length, bills: billIds.length, grandTotal: grandTotal });
 
     // -------------------- CREATE JE --------------------
     var je = record.create({ type: record.Type.JOURNAL_ENTRY, isDynamic: true });
@@ -107,7 +105,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
       log.error('SET RELATED BILLS FAILED', eMS.message);
     }
 
-    // 1) Credit line per vendor (param account) + detail
+    // 1) Credit per vendor (param account) + detail
     for (var c = 0; c < vendorIds.length; c++) {
       var vId = vendorIds[c];
       var bucket = vendorAgg[vId];
@@ -138,7 +136,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'department', value: DEBIT_DEPARTMENT });
     je.commitLine({ sublistId: 'line' });
 
-    // 3) NEW: Debit A/P (1043) per vendor - this is what makes the JE applicable on the payment
+    // 3) Debit A/P per vendor (makes JE applicable on payment)
     for (var d = 0; d < vendorIds.length; d++) {
       je.selectNewLine({ sublistId: 'line' });
       je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: AP_DEBIT_ACCOUNT });
@@ -147,7 +145,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
       je.commitLine({ sublistId: 'line' });
     }
 
-    // 4) NEW: Credit offset (1035) grand total
+    // 4) Credit offset grand total
     je.selectNewLine({ sublistId: 'line' });
     je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: OFFSET_CREDIT_ACCT });
     je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'credit', value: grandTotal });
@@ -156,19 +154,6 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var jeId = je.save({ enableSourcing: false, ignoreMandatoryFields: true });
     log.audit('JE CREATED', { jeId: jeId, usage: remUsage() });
 
-// =====================================================
-// TEMPORARY: TEST ONLY JE CREATION
-// Remove this return after validating the Journal Entry.
-// =====================================================
-log.audit('TEST MODE', {
-  message: 'Only JE was created. Bills were not updated and payment was not created.',
-  jeId: jeId
-});
-
-return;
-
-
-    
     // -------------------- UPDATE BILLS --------------------
     for (var bb = 0; bb < billIds.length; bb++) {
       try {
@@ -186,7 +171,12 @@ return;
       }
     }
 
-    // -------------------- PAYMENT PER VENDOR (apply bills + JE credit) --------------------
+    if (!CREATE_PAYMENT) {
+      log.audit('TEST MODE', { message: 'Payment skipped', jeId: jeId });
+      return;
+    }
+
+    // -------------------- PAYMENT PER VENDOR --------------------
     for (var p = 0; p < vendorIds.length; p++) {
       try {
         var payId = createPayment(vendorAgg[vendorIds[p]].bills, jeId);
@@ -199,9 +189,14 @@ return;
     log.audit('reduce DONE', { jeId: jeId, usage: remUsage() });
   }
 
+  /**
+   * Transform the first bill into a Vendor Payment, then in the APPLY sublist
+   * tick this vendor's bills AND the Journal line for our JE.
+   */
   function createPayment(bills, jeId) {
     var wanted = {};
     for (var i = 0; i < bills.length; i++) wanted[String(bills[i].vbId)] = true;
+    wanted[String(jeId)] = true; // the Journal shows in the same apply sublist
 
     var pay = record.transform({
       fromType: record.Type.VENDOR_BILL,
@@ -210,28 +205,45 @@ return;
       isDynamic: true
     });
 
-    // Apply only this vendor's bills
-    var applyCount = pay.getLineCount({ sublistId: 'apply' });
-    for (var a = 0; a < applyCount; a++) {
+    var applied = 0;
+    var jeApplied = false;
+    var count = pay.getLineCount({ sublistId: 'apply' });
+
+    for (var a = 0; a < count; a++) {
       pay.selectLine({ sublistId: 'apply', line: a });
       var doc = String(pay.getCurrentSublistValue({ sublistId: 'apply', fieldId: 'doc' }));
-      pay.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: !!wanted[doc] });
+      var mark = !!wanted[doc];
+
+      pay.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: mark });
       pay.commitLine({ sublistId: 'apply' });
+
+      if (mark) {
+        applied++;
+        if (doc === String(jeId)) jeApplied = true;
+      }
     }
 
-    // Apply the JE credit
-    var creditCount = pay.getLineCount({ sublistId: 'credit' });
-    var jeApplied = false;
-    for (var c = 0; c < creditCount; c++) {
-      pay.selectLine({ sublistId: 'credit', line: c });
-      var cdoc = String(pay.getCurrentSublistValue({ sublistId: 'credit', fieldId: 'doc' }));
-      var isJE = (cdoc === String(jeId));
-      if (isJE) jeApplied = true;
-      pay.setCurrentSublistValue({ sublistId: 'credit', fieldId: 'apply', value: isJE });
-      pay.commitLine({ sublistId: 'credit' });
+    // Fallback: some accounts surface credits in the separate 'credit' sublist
+    if (!jeApplied) {
+      try {
+        var cCount = pay.getLineCount({ sublistId: 'credit' });
+        for (var c = 0; c < cCount; c++) {
+          pay.selectLine({ sublistId: 'credit', line: c });
+          var cdoc = String(pay.getCurrentSublistValue({ sublistId: 'credit', fieldId: 'doc' }));
+          if (cdoc === String(jeId)) {
+            pay.setCurrentSublistValue({ sublistId: 'credit', fieldId: 'apply', value: true });
+            pay.commitLine({ sublistId: 'credit' });
+            jeApplied = true;
+          }
+        }
+      } catch (eC) { /* no credit sublist on this form */ }
     }
 
-    if (!jeApplied) log.error('JE NOT FOUND IN CREDIT SUBLIST', { jeId: jeId, bill: bills[0].vbId });
+    if (!jeApplied) {
+      throw new Error('JE ' + jeId + ' not found in apply/credit sublist for bill ' + bills[0].vbId);
+    }
+
+    log.audit('PAYMENT LINES MARKED', { bill: bills[0].vbId, linesApplied: applied, jeApplied: jeApplied });
 
     return pay.save({ enableSourcing: false, ignoreMandatoryFields: true });
   }
