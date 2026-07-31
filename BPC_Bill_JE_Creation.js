@@ -156,6 +156,18 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var jeId = je.save({ enableSourcing: false, ignoreMandatoryFields: true });
     log.audit('JE CREATED', { jeId: jeId, usage: remUsage() });
 
+// =====================================================
+// TEMPORARY: TEST ONLY JE CREATION
+// Remove this return after validating the Journal Entry.
+// =====================================================
+log.audit('TEST MODE', {
+  message: 'Only JE was created. Bills were not updated and payment was not created.',
+  jeId: jeId
+});
+
+return;
+
+
     
     // -------------------- UPDATE BILLS --------------------
     for (var bb = 0; bb < billIds.length; bb++) {
