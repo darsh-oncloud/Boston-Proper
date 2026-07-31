@@ -6,300 +6,234 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
   // ------------------- CONFIG -------------------
   var SUBSIDIARY_ID = 2;
+  var DEBIT_DEPARTMENT = 30;
 
   // Script Parameters
-  var PARAM_DEBIT_ACCT      = 'custscript_debit_account';          // Account field
-  var PARAM_CREDIT_ACCT     = 'custscript_je_credit_account';      // Account field
-  var PARAM_SAVED_SEARCH_ID = 'custscript_saved_search_id';        // Free-form text (saved search id)
+  var PARAM_DEBIT_ACCT      = 'custscript_debit_account';
+  var PARAM_CREDIT_ACCT     = 'custscript_je_credit_account';
+  var PARAM_SAVED_SEARCH_ID = 'custscript_saved_search_id';
 
-  // JE line detail column
-  var JE_LINE_DETAIL_COL = 'custcol_related_transaction_details';
+  // NEW fixed accounts (internal ids)
+  var AP_DEBIT_ACCOUNT   = 1043; // debit, per vendor (must be A/P so JE is applicable on payment)
+  var OFFSET_CREDIT_ACCT = 1035; // credit, grand total
 
-  // Vendor Bill fields
-  var VB_JE_CREATED_CHK = 'custbody_je_created';
-  var VB_RELATED_JE_FLD = 'custbody_related_je';
-
-  // PO field
-  var PO_RELATED_JE_FLD = 'custbody_related_je';
-
-  // --------------------------------------------------------
+  // Fields
+  var JE_LINE_DETAIL_COL   = 'custcol_related_transaction_details';
+  var JE_RELATED_BILLS_FLD = 'custbody_related_bills'; // multiselect on JE
+  var VB_JE_CREATED_CHK    = 'custbody_je_created';
+  var VB_RELATED_JE_FLD    = 'custbody_related_je';
+  // ----------------------------------------------
 
   function remUsage() {
-    try { return runtime.getCurrentScript().getRemainingUsage(); }
-    catch (e) { return null; }
+    try { return runtime.getCurrentScript().getRemainingUsage(); } catch (e) { return null; }
   }
 
-  function todayText() {
-    var d = new Date();
-    return (d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear();
-  }
-
-  function safeGetGroupedValue(valuesObj, key) {
-    var v = valuesObj[key];
+  function gv(vals, key) {
+    var v = vals[key];
     if (v == null) return '';
-    if (typeof v === 'object') {
-      if (v.value != null) return String(v.value);
-      if (v.text != null) return String(v.text);
-      return JSON.stringify(v);
-    }
+    if (typeof v === 'object') return String(v.value != null ? v.value : (v.text != null ? v.text : ''));
     return String(v);
   }
 
-  function safeGetNumber(valuesObj, key) {
-    var v = valuesObj[key];
+  function gn(vals, key) {
+    var v = vals[key];
     if (v == null) return 0;
-    if (typeof v === 'object') {
-      if (v.value != null) return parseFloat(v.value) || 0;
-      if (v.text != null) return parseFloat(v.text) || 0;
-      return 0;
-    }
+    if (typeof v === 'object') return parseFloat(v.value != null ? v.value : v.text) || 0;
     return parseFloat(v) || 0;
   }
 
-  // -------------------- INPUT = SAVED SEARCH PARAM --------------------
   function getInputData() {
-    var script = runtime.getCurrentScript();
-    var savedSearchId = script.getParameter({ name: PARAM_SAVED_SEARCH_ID });
-
-    log.audit('getInputData START', {
-      savedSearchId: savedSearchId,
-      usage: remUsage()
-    });
-
-    if (!savedSearchId) {
-      throw new Error('Missing required parameter: ' + PARAM_SAVED_SEARCH_ID + ' (Saved Search ID)');
-    }
-
-    try {
-      var s = search.load({ id: savedSearchId });
-      var count = s.runPaged({ pageSize: 1000 }).count;
-
-      log.audit('Saved Search loaded', { id: savedSearchId, count: count, usage: remUsage() });
-      return s;
-
-    } catch (e) {
-      log.error('getInputData ERROR loading saved search', {
-        savedSearchId: savedSearchId,
-        message: e.message,
-        stack: e.stack,
-        usage: remUsage()
-      });
-      throw e;
-    }
+    var savedSearchId = runtime.getCurrentScript().getParameter({ name: PARAM_SAVED_SEARCH_ID });
+    if (!savedSearchId) throw new Error('Missing parameter: ' + PARAM_SAVED_SEARCH_ID);
+    log.audit('getInputData', { savedSearchId: savedSearchId, usage: remUsage() });
+    return search.load({ id: savedSearchId });
   }
 
   function map(context) {
-    try {
-      context.write({ key: 'ALL', value: context.value });
-    } catch (e) {
-      log.error('map ERROR', { message: e.message, stack: e.stack, value: context.value, usage: remUsage() });
-      throw e;
-    }
+    context.write({ key: 'ALL', value: context.value });
   }
 
   function reduce(context) {
-    log.audit('reduce START', { key: context.key, rows: context.values.length, usage: remUsage() });
-
-    // READ ACCOUNT PARAMETERS
     var script = runtime.getCurrentScript();
     var JE_DEBIT_ACCOUNT  = script.getParameter({ name: PARAM_DEBIT_ACCT });
     var JE_CREDIT_ACCOUNT = script.getParameter({ name: PARAM_CREDIT_ACCT });
 
-    log.audit('JE Accounts (from params)', { debit: JE_DEBIT_ACCOUNT, credit: JE_CREDIT_ACCOUNT });
-
     if (!JE_DEBIT_ACCOUNT || !JE_CREDIT_ACCOUNT) {
-      throw new Error(
-        'Missing JE account parameter(s). ' +
-        'Debit(' + PARAM_DEBIT_ACCT + '): ' + JE_DEBIT_ACCOUNT + ', ' +
-        'Credit(' + PARAM_CREDIT_ACCT + '): ' + JE_CREDIT_ACCOUNT
-      );
+      throw new Error('Missing JE account parameter(s). Debit: ' + JE_DEBIT_ACCOUNT + ', Credit: ' + JE_CREDIT_ACCOUNT);
     }
 
-    // -------------------- Parse Search rows --------------------
-    // Your saved search must match the same output columns (summary keys)
-    var rows = [];
-    var poIdMap = {};
+    // -------------------- Parse + group by vendor --------------------
+    var vendorAgg = {};   // vendorId -> { total, bills[] }
+    var billSet   = {};
+    var grandTotal = 0;
 
-    try {
-      for (var i = 0; i < context.values.length; i++) {
-        var raw = JSON.parse(context.values[i]);
-        var vals = raw.values || {};
+    for (var i = 0; i < context.values.length; i++) {
+      var vals = (JSON.parse(context.values[i]).values) || {};
 
-        var vbId    = safeGetGroupedValue(vals, 'GROUP(internalid)');
-        var vbTran  = safeGetGroupedValue(vals, 'GROUP(tranid)');
-        var vbDate  = safeGetGroupedValue(vals, 'GROUP(trandate)');
-        var vendor  = safeGetGroupedValue(vals, 'GROUP(entity)');
-        var poId    = safeGetGroupedValue(vals, 'GROUP(appliedtotransaction)');
-        var amt     = safeGetNumber(vals, 'SUM(amount)');
+      var vbId   = gv(vals, 'GROUP(internalid)');
+      var vbTran = gv(vals, 'GROUP(tranid)');
+      var vendor = gv(vals, 'GROUP(entity)');
+      var poId   = gv(vals, 'GROUP(appliedtotransaction)');
+      var amt    = gn(vals, 'SUM(amount)');
 
-        if (!vbId || !vendor || !poId || amt <= 0) continue;
+      if (!vbId || !vendor || !poId || amt <= 0) continue;
 
-        poIdMap[poId] = true;
+      if (!vendorAgg[vendor]) vendorAgg[vendor] = { total: 0, bills: [] };
+      vendorAgg[vendor].total += amt;
+      vendorAgg[vendor].bills.push({ vbId: vbId, vbTran: vbTran, amount: amt });
 
-        rows.push({
-          vbId: vbId,
-          vbTran: vbTran,
-          vbDate: vbDate,
-          vendorId: vendor,
-          poId: poId,
-          amount: amt
-        });
-      }
-
-      log.audit('Search PARSE summary', {
-        parsedRows: rows.length,
-        uniquePOs: Object.keys(poIdMap).length,
-        usage: remUsage()
-      });
-
-    } catch (e1) {
-      log.error('Parse Search ERROR', { message: e1.message, stack: e1.stack, usage: remUsage() });
-      throw e1;
-    }
-
-    if (!rows.length) {
-      log.audit('reduce EXIT', 'No rows matched after parsing.');
-      return;
-    }
-
-
-
-    // -------------------- Filter rows (now = same rows) --------------------
-    var filtered = rows;
-
-    log.audit('FILTER RESULT', {
-      before: rows.length,
-      after: filtered.length,
-      removed: rows.length - filtered.length,
-      usage: remUsage()
-    });
-
-    if (!filtered.length) {
-      log.audit('reduce EXIT', 'No rows left after filter.');
-      return;
-    }
-
-    // -------------------- Group by Vendor --------------------
-    var vendorAgg = {}; // vendorId -> { total, bills[], minDate, maxDate }
-    var billSet = {};
-    var poSet = {};
-
-    for (var k = 0; k < filtered.length; k++) {
-      var r = filtered[k];
-      var vendorId = r.vendorId;
-
-      if (!vendorAgg[vendorId]) vendorAgg[vendorId] = { total: 0, bills: [], minDate: '', maxDate: '' };
-      vendorAgg[vendorId].total += r.amount;
-
-      vendorAgg[vendorId].bills.push({
-        vbId: r.vbId,
-        vbTran: r.vbTran,
-        vbDate: r.vbDate,
-        amount: r.amount
-      });
-
-      var d = r.vbDate || '';
-      if (d) {
-        if (!vendorAgg[vendorId].minDate) vendorAgg[vendorId].minDate = d;
-        if (!vendorAgg[vendorId].maxDate) vendorAgg[vendorId].maxDate = d;
-        if (d < vendorAgg[vendorId].minDate) vendorAgg[vendorId].minDate = d;
-        if (d > vendorAgg[vendorId].maxDate) vendorAgg[vendorId].maxDate = d;
-      }
-
-      billSet[r.vbId] = true;
-      poSet[r.poId] = true;
+      billSet[vbId] = true;
+      grandTotal += amt;
     }
 
     var vendorIds = Object.keys(vendorAgg);
-    var grandTotal = 0;
-    for (var v = 0; v < vendorIds.length; v++) grandTotal += vendorAgg[vendorIds[v]].total;
+    var billIds = Object.keys(billSet);
 
-    log.audit('GROUP SUMMARY', {
-      vendors: vendorIds.length,
-      uniqueBills: Object.keys(billSet).length,
-      uniquePOs: Object.keys(poSet).length,
-      grandTotal: grandTotal,
-      usage: remUsage()
-    });
+    if (!vendorIds.length) {
+      log.audit('reduce EXIT', 'No rows matched.');
+      return;
+    }
+
+    log.audit('GROUP SUMMARY', { vendors: vendorIds.length, bills: billIds.length, grandTotal: grandTotal, usage: remUsage() });
 
     // -------------------- CREATE JE --------------------
-    log.audit('JE CREATE START', { usage: remUsage() });
-
     var je = record.create({ type: record.Type.JOURNAL_ENTRY, isDynamic: true });
     je.setValue({ fieldId: 'subsidiary', value: SUBSIDIARY_ID });
     je.setValue({ fieldId: 'memo', value: 'Consolidated Vendor Bill JE' });
 
-    // Credit line per vendor with simplified details (BILL ONLY)
+    try {
+      je.setValue({ fieldId: JE_RELATED_BILLS_FLD, value: billIds });
+    } catch (eMS) {
+      log.error('SET RELATED BILLS FAILED', eMS.message);
+    }
+
+    // 1) Credit line per vendor (param account) + detail
     for (var c = 0; c < vendorIds.length; c++) {
       var vId = vendorIds[c];
       var bucket = vendorAgg[vId];
-      var vendTot = bucket.total;
 
-      var lineDetail = '';
-
+      var detail = '';
       for (var b = 0; b < bucket.bills.length; b++) {
-        var bill = bucket.bills[b];
-        lineDetail +=
-          '- Bill: ' + (bill.vbTran || '') + ' (ID ' + (bill.vbId || '') + ')' +
-          ' | Amount: ' + (bill.amount || 0).toFixed(2) +
-          '\n';
+        detail += '- Bill: ' + bucket.bills[b].vbTran + ' (ID ' + bucket.bills[b].vbId + ')' +
+                  ' | Amount: ' + bucket.bills[b].amount.toFixed(2) + '\n';
       }
-
-      lineDetail += 'Vendor Total: ' + vendTot.toFixed(2) + '\n';
+      detail += 'Vendor Total: ' + bucket.total.toFixed(2) + '\n';
 
       je.selectNewLine({ sublistId: 'line' });
       je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: JE_CREDIT_ACCOUNT });
       je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'entity', value: vId });
-      je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'credit', value: vendTot });
-
+      je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'credit', value: bucket.total });
       try {
-        je.setCurrentSublistValue({ sublistId: 'line', fieldId: JE_LINE_DETAIL_COL, value: lineDetail });
+        je.setCurrentSublistValue({ sublistId: 'line', fieldId: JE_LINE_DETAIL_COL, value: detail });
       } catch (eCol) {
-        log.error('SET LINE DETAIL COL FAILED', {
-          vendor: vId,
-          fieldId: JE_LINE_DETAIL_COL,
-          message: eCol.message,
-          stack: eCol.stack
-        });
+        log.error('SET LINE DETAIL FAILED', { vendor: vId, message: eCol.message });
       }
-
       je.commitLine({ sublistId: 'line' });
     }
 
-    // Debit grand total
+    // 2) Debit grand total (param account)
     je.selectNewLine({ sublistId: 'line' });
     je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: JE_DEBIT_ACCOUNT });
     je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'debit', value: grandTotal });
-    je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'department', value: 30 });
+    je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'department', value: DEBIT_DEPARTMENT });
+    je.commitLine({ sublistId: 'line' });
+
+    // 3) NEW: Debit A/P (1043) per vendor - this is what makes the JE applicable on the payment
+    for (var d = 0; d < vendorIds.length; d++) {
+      je.selectNewLine({ sublistId: 'line' });
+      je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: AP_DEBIT_ACCOUNT });
+      je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'entity', value: vendorIds[d] });
+      je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'debit', value: vendorAgg[vendorIds[d]].total });
+      je.commitLine({ sublistId: 'line' });
+    }
+
+    // 4) NEW: Credit offset (1035) grand total
+    je.selectNewLine({ sublistId: 'line' });
+    je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'account', value: OFFSET_CREDIT_ACCT });
+    je.setCurrentSublistValue({ sublistId: 'line', fieldId: 'credit', value: grandTotal });
     je.commitLine({ sublistId: 'line' });
 
     var jeId = je.save({ enableSourcing: false, ignoreMandatoryFields: true });
     log.audit('JE CREATED', { jeId: jeId, usage: remUsage() });
 
-    // -------------------- UPDATE VBs --------------------
-    var vbIds = Object.keys(billSet);
-    log.audit('UPDATE VBs START', { count: vbIds.length, usage: remUsage() });
+// =====================================================
+// TEMPORARY: TEST ONLY JE CREATION
+// Remove this return after validating the Journal Entry.
+// =====================================================
+log.audit('TEST MODE', {
+  message: 'Only JE was created. Bills were not updated and payment was not created.',
+  jeId: jeId
+});
 
-    for (var bb = 0; bb < vbIds.length; bb++) {
-      var vbId2 = vbIds[bb];
+return;
+
+
+    
+    // -------------------- UPDATE BILLS --------------------
+    for (var bb = 0; bb < billIds.length; bb++) {
       try {
         var vbVals = {};
         vbVals[VB_JE_CREATED_CHK] = true;
         vbVals[VB_RELATED_JE_FLD] = jeId;
-
         record.submitFields({
           type: record.Type.VENDOR_BILL,
-          id: vbId2,
+          id: billIds[bb],
           values: vbVals,
           options: { enableSourcing: false, ignoreMandatoryFields: true }
         });
       } catch (eVB) {
-        log.error('VB UPDATE FAILED', { vbId: vbId2, message: eVB.message, stack: eVB.stack });
+        log.error('VB UPDATE FAILED', { vbId: billIds[bb], message: eVB.message });
       }
     }
 
+    // -------------------- PAYMENT PER VENDOR (apply bills + JE credit) --------------------
+    for (var p = 0; p < vendorIds.length; p++) {
+      try {
+        var payId = createPayment(vendorAgg[vendorIds[p]].bills, jeId);
+        log.audit('PAYMENT CREATED', { vendor: vendorIds[p], paymentId: payId });
+      } catch (ePay) {
+        log.error('PAYMENT FAILED', { vendor: vendorIds[p], message: ePay.message, stack: ePay.stack });
+      }
+    }
 
     log.audit('reduce DONE', { jeId: jeId, usage: remUsage() });
+  }
+
+  function createPayment(bills, jeId) {
+    var wanted = {};
+    for (var i = 0; i < bills.length; i++) wanted[String(bills[i].vbId)] = true;
+
+    var pay = record.transform({
+      fromType: record.Type.VENDOR_BILL,
+      fromId: bills[0].vbId,
+      toType: record.Type.VENDOR_PAYMENT,
+      isDynamic: true
+    });
+
+    // Apply only this vendor's bills
+    var applyCount = pay.getLineCount({ sublistId: 'apply' });
+    for (var a = 0; a < applyCount; a++) {
+      pay.selectLine({ sublistId: 'apply', line: a });
+      var doc = String(pay.getCurrentSublistValue({ sublistId: 'apply', fieldId: 'doc' }));
+      pay.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: !!wanted[doc] });
+      pay.commitLine({ sublistId: 'apply' });
+    }
+
+    // Apply the JE credit
+    var creditCount = pay.getLineCount({ sublistId: 'credit' });
+    var jeApplied = false;
+    for (var c = 0; c < creditCount; c++) {
+      pay.selectLine({ sublistId: 'credit', line: c });
+      var cdoc = String(pay.getCurrentSublistValue({ sublistId: 'credit', fieldId: 'doc' }));
+      var isJE = (cdoc === String(jeId));
+      if (isJE) jeApplied = true;
+      pay.setCurrentSublistValue({ sublistId: 'credit', fieldId: 'apply', value: isJE });
+      pay.commitLine({ sublistId: 'credit' });
+    }
+
+    if (!jeApplied) log.error('JE NOT FOUND IN CREDIT SUBLIST', { jeId: jeId, bill: bills[0].vbId });
+
+    return pay.save({ enableSourcing: false, ignoreMandatoryFields: true });
   }
 
   return { getInputData: getInputData, map: map, reduce: reduce };
