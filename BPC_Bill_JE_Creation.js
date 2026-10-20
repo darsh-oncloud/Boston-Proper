@@ -10,11 +10,13 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
   var PARAM_DEBIT_ACCT      = 'custscript_debit_account';
   var PARAM_CREDIT_ACCT     = 'custscript_je_credit_account';
+  var PARAM_AP_DEBIT_ACCT    = 'custscript_bill_collectives_payables';
+  var PARAM_OFFSET_CREDIT_ACCT = 'custscript_collective_undeposited_funds';
   var PARAM_SAVED_SEARCH_ID = 'custscript_saved_search_id';
 
-  var AP_DEBIT_ACCOUNT   = 1043; // debit, per vendor (A/P)
-  var OFFSET_CREDIT_ACCT = 1035; // credit, grand total
-
+  // var AP_DEBIT_ACCOUNT   = 1043; // debit, per vendor (A/P)
+  // var OFFSET_CREDIT_ACCT = 1035; // credit, grand total
+  
   var JE_LINE_DETAIL_COL   = 'custcol_related_transaction_details';
   var JE_RELATED_BILLS_FLD = 'custbody_related_bills';
   var VB_JE_CREATED_CHK    = 'custbody_je_created';
@@ -55,7 +57,9 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var script = runtime.getCurrentScript();
     var JE_DEBIT_ACCOUNT  = script.getParameter({ name: PARAM_DEBIT_ACCT });
     var JE_CREDIT_ACCOUNT = script.getParameter({ name: PARAM_CREDIT_ACCT });
-
+    var AP_DEBIT_ACCOUNT   = script.getParameter({ name: PARAM_AP_DEBIT_ACCT });
+    var OFFSET_CREDIT_ACCT = script.getParameter({ name: PARAM_OFFSET_CREDIT_ACCT });
+    
     if (!JE_DEBIT_ACCOUNT || !JE_CREDIT_ACCOUNT) {
       throw new Error('Missing JE account parameter(s). Debit: ' + JE_DEBIT_ACCOUNT + ', Credit: ' + JE_CREDIT_ACCOUNT);
     }
